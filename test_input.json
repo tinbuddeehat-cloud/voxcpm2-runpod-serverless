@@ -1,0 +1,8 @@
+{
+  "input": {
+    "action": "generate",
+    "text": "สวัสดีครับ นี่คือการทดสอบ VoxCPM2 บน Runpod Serverless",
+    "cfg_value": 2.0,
+    "inference_timesteps": 10
+  }
+}
