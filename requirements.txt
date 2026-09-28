@@ -1,1 +1,4 @@
-runpod>=1.7.9,<2.0\nvoxcpm==2.0.3\nsoundfile>=0.13,<1\nrequests>=2.32,<3\n
+runpod>=1.7.9,<2.0
+voxcpm==2.0.3
+soundfile>=0.13,<1
+requests>=2.32,<3
