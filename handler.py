@@ -1,40 +1,43 @@
 import base64, glob, io, os, shutil, tempfile, time
 from pathlib import Path
-import requests, runpod, soundfile as sf, torch
+
+import requests
+import runpod
+import soundfile as sf
+import torch
 from voxcpm import VoxCPM
 
-DEVICE=os.getenv("VOXCPM_DEVICE","cuda")
-VOL=Path(os.getenv("RUNPOD_VOLUME_PATH","/runpod-volume"))
-CLEAN=Path(os.getenv("VOXCPM_VOLUME_MODEL_DIR",str(VOL/"voxcpm2-local")))
-HFVOL=Path(os.getenv("VOXCPM_VOLUME_HF_CACHE",str(VOL/"huggingface-cache")))
-RUNTIME=Path(os.getenv("VOXCPM_RUNTIME_DIR","/tmp/voxcpm2-runtime"))
-OPT=os.getenv("VOXCPM_OPTIMIZE","false").lower() in ("1","true","yes","on")
-MAX_CHARS=int(os.getenv("VOXCPM_MAX_TEXT_CHARS","2000"))
+DEVICE = os.getenv("VOXCPM_DEVICE", "cuda")
+VOL = Path(os.getenv("RUNPOD_VOLUME_PATH", "/runpod-volume"))
+CLEAN = Path(os.getenv("VOXCPM_VOLUME_MODEL_DIR", str(VOL / "voxcpm2-local")))
+HFVOL = Path(os.getenv("VOXCPM_VOLUME_HF_CACHE", str(VOL / "huggingface-cache")))
+RUNTIME = Path(os.getenv("VOXCPM_RUNTIME_DIR", "/tmp/voxcpm2-runtime"))
+OPT = os.getenv("VOXCPM_OPTIMIZE", "false").lower() in ("1", "true", "yes", "on")
+MAX_CHARS = int(os.getenv("VOXCPM_MAX_TEXT_CHARS", "2000"))
+
 
 def find_weight(name):
-    # Preferred layout for v0.1.2: weights uploaded directly into
-    # /runpod-volume/voxcpm2-local by the GitHub S3 workflow.
     direct = CLEAN / name
     if direct.is_file() and direct.stat().st_size > 0:
         return direct
 
-    # Backward-compatible fallback for the older Hugging Face cache layout.
-    pats=[
-        str(HFVOL/"models--openbmb--VoxCPM2"/"snapshots"/"*"/name),
-        str(HFVOL/"**"/name),
+    pats = [
+        str(HFVOL / "models--openbmb--VoxCPM2" / "snapshots" / "*" / name),
+        str(HFVOL / "**" / name),
     ]
     for pat in pats:
         for m in glob.glob(pat, recursive=True):
-            p=Path(m)
-            if p.is_file() and p.stat().st_size>0:
+            p = Path(m)
+            if p.is_file() and p.stat().st_size > 0:
                 return p
     return None
+
 
 def prepare_model():
     if not CLEAN.is_dir():
         return "openbmb/VoxCPM2"
 
-    RUNTIME.mkdir(parents=True,exist_ok=True)
+    RUNTIME.mkdir(parents=True, exist_ok=True)
 
     for n in [
         "config.json",
@@ -43,129 +46,178 @@ def prepare_model():
         "special_tokens_map.json",
         "tokenization_voxcpm2.py",
     ]:
-        s=CLEAN/n
-        if not s.is_file() or s.stat().st_size==0:
+        s = CLEAN / n
+        if not s.is_file() or s.stat().st_size == 0:
             raise RuntimeError(f"Missing model file: {s}")
-        shutil.copy2(s,RUNTIME/n)
+        shutil.copy2(s, RUNTIME / n)
 
-    for n in ["model.safetensors","audiovae.pth"]:
-        s=find_weight(n)
+    for n in ["model.safetensors", "audiovae.pth"]:
+        s = find_weight(n)
         if s is None:
-            raise RuntimeError(
-                f"Missing weight: {n}. Checked {CLEAN} and {HFVOL}."
-            )
-        d=RUNTIME/n
+            raise RuntimeError(f"Missing weight: {n}. Checked {CLEAN} and {HFVOL}.")
+        d = RUNTIME / n
         if d.exists() or d.is_symlink():
             d.unlink()
-        os.symlink(s,d)
+        os.symlink(s, d)
         print(f"[startup] {n} -> {s}")
 
     return str(RUNTIME)
 
+
 def load_model():
     if DEVICE.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA not available")
-    src=prepare_model()
-    t=time.time()
-    m=VoxCPM.from_pretrained(
+
+    src = prepare_model()
+    t = time.time()
+    model = VoxCPM.from_pretrained(
         src,
         cache_dir="/tmp/hf-cache",
         load_denoiser=False,
         optimize=OPT,
         device=DEVICE,
     )
-    elapsed=time.time()-t
+    elapsed = time.time() - t
     print(f"[startup] VoxCPM2 ready in {elapsed:.2f}s optimize={OPT}")
-    return m, elapsed
+    return model, elapsed
 
-MODEL,LOAD_S=load_model()
-SR=MODEL.tts_model.sample_rate
 
-def ref_file(inp,tmp):
-    b64=inp.get("reference_audio_b64")
-    url=inp.get("reference_audio_url")
+MODEL, LOAD_S = load_model()
+SR = MODEL.tts_model.sample_rate
+
+
+def ref_file(inp, tmp):
+    b64 = inp.get("reference_audio_b64")
+    url = inp.get("reference_audio_url")
+
     if b64 and url:
         raise ValueError("Use only one reference audio source")
     if not b64 and not url:
         return None
-    p=Path(tmp)/"reference.wav"
+
+    p = Path(tmp) / "reference.wav"
+
     if b64:
         if b64.strip().lower().startswith("data:"):
-            b64=b64.split(",",1)[1]
-        p.write_bytes(base64.b64decode(b64,validate=True))
+            b64 = b64.split(",", 1)[1]
+        p.write_bytes(base64.b64decode(b64, validate=True))
     else:
-        r=requests.get(url,timeout=60)
+        r = requests.get(url, timeout=60)
         r.raise_for_status()
         p.write_bytes(r.content)
+
     return str(p)
 
-def wav_bytes(w):
-    b=io.BytesIO()
-    sf.write(b,w,SR,format="WAV",subtype="PCM_16")
+
+def wav_bytes(wav):
+    b = io.BytesIO()
+    sf.write(b, wav, SR, format="WAV", subtype="PCM_16")
     return b.getvalue()
 
-def handler(job):
-    inp=job.get("input") or {}
-    action=str(inp.get("action","generate")).lower()
 
-    if action=="health":
+def handler(job):
+    inp = job.get("input") or {}
+    action = str(inp.get("action", "generate")).lower()
+
+    if action == "health":
         return {
-            "ok":True,
-            "engine":"voxcpm2",
-            "gpu":torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU",
-            "sample_rate":SR,
-            "optimize":OPT,
-            "model_load_seconds":round(LOAD_S,3),
+            "ok": True,
+            "engine": "voxcpm2",
+            "version": "0.1.3",
+            "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU",
+            "sample_rate": SR,
+            "optimize": OPT,
+            "model_load_seconds": round(LOAD_S, 3),
         }
 
-    if action!="generate":
+    if action != "generate":
         raise ValueError("action must be generate or health")
 
-    text=str(inp.get("text","")).strip()
+    text = str(inp.get("text", "")).strip()
     if not text:
         raise ValueError("input.text is required")
-    if len(text)>MAX_CHARS:
+    if len(text) > MAX_CHARS:
         raise ValueError(f"text exceeds {MAX_CHARS} chars")
 
-    cfg=float(inp.get("cfg_value",2.0))
-    steps=int(inp.get("inference_timesteps",10))
-    t=time.time()
+    reference_text = str(inp.get("reference_text", "")).strip()
+    if len(reference_text) > MAX_CHARS:
+        raise ValueError(f"reference_text exceeds {MAX_CHARS} chars")
+
+    cfg = float(inp.get("cfg_value", 2.0))
+    steps = int(inp.get("inference_timesteps", 10))
+    seed = inp.get("seed")
+    if seed is not None:
+        seed = int(seed)
+
+    t = time.time()
 
     with tempfile.TemporaryDirectory(prefix="voxcpm2-") as tmp:
-        ref=ref_file(inp,tmp)
-        kw={"text":text,"cfg_value":cfg,"inference_timesteps":steps}
-        if ref:
-            kw["reference_wav_path"]=ref
+        ref = ref_file(inp, tmp)
 
-        wav=MODEL.generate(**kw)
-        elapsed=time.time()-t
-        duration=len(wav)/SR
-        data=wav_bytes(wav)
+        if reference_text and not ref:
+            raise ValueError("reference_text requires reference audio")
 
-        out={
-            "ok":True,
-            "engine":"voxcpm2",
-            "mode":"voice_clone" if ref else "tts",
-            "sample_rate":SR,
-            "duration_seconds":round(duration,3),
-            "generation_seconds":round(elapsed,3),
-            "rtf":round(elapsed/duration,3) if duration else None,
+        kw = {
+            "text": text,
+            "cfg_value": cfg,
+            "inference_timesteps": steps,
         }
 
-        up=inp.get("output_upload_url")
+        if seed is not None:
+            kw["seed"] = seed
+
+        if ref:
+            # VoxCPM2 basic cloning.
+            kw["reference_wav_path"] = ref
+
+            # VoxCPM2 Ultimate Cloning:
+            # same clip is used as prompt + reference, while reference_text
+            # contains the exact transcript of that clip.
+            if reference_text:
+                kw["prompt_wav_path"] = ref
+                kw["prompt_text"] = reference_text
+
+        wav = MODEL.generate(**kw)
+        elapsed = time.time() - t
+        duration = len(wav) / SR
+        data = wav_bytes(wav)
+
+        if ref and reference_text:
+            mode = "ultimate_clone"
+        elif ref:
+            mode = "voice_clone"
+        else:
+            mode = "tts"
+
+        out = {
+            "ok": True,
+            "engine": "voxcpm2",
+            "version": "0.1.3",
+            "mode": mode,
+            "sample_rate": SR,
+            "duration_seconds": round(duration, 3),
+            "generation_seconds": round(elapsed, 3),
+            "rtf": round(elapsed / duration, 3) if duration else None,
+            "cfg_value": cfg,
+            "inference_timesteps": steps,
+        }
+
+        up = inp.get("output_upload_url")
         if up:
-            r=requests.put(
+            r = requests.put(
                 up,
                 data=data,
-                headers={"Content-Type":"audio/wav"},
+                headers={"Content-Type": "audio/wav"},
                 timeout=60,
             )
             r.raise_for_status()
-            out["output"]="uploaded"
+            out["output"] = "uploaded"
         else:
-            out["output"]="base64"
-            out["audio_b64"]=base64.b64encode(data).decode("ascii")
+            out["output"] = "base64"
+            out["audio_b64"] = base64.b64encode(data).decode("ascii")
+
         return out
 
-if __name__=="__main__":
-    runpod.serverless.start({"handler":handler})
+
+if __name__ == "__main__":
+    runpod.serverless.start({"handler": handler})
