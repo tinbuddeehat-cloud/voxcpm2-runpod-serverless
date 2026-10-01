@@ -1,0 +1,73 @@
+name: Build Nano-vLLM experimental image
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/voxcpm2-nano]
+    paths:
+      - Dockerfile.nano
+      - Dockerfile.nano.dockerignore
+      - requirements.nano.txt
+      - requirements.test.txt
+      - nano/**
+      - scripts/**
+      - tests/**
+      - .github/workflows/build-nano.yml
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.test.txt
+      - run: python -m compileall -q nano scripts
+      - run: python -m unittest discover -s tests -v
+      - name: Validate PowerShell benchmark syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$env:GITHUB_WORKSPACE/scripts/benchmark-nano.ps1", [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | Format-List
+            exit 1
+          }
+
+  build:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/lib/android
+          docker system prune -af
+      - name: Image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.nano
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:0.2.0-nano
+            ${{ steps.image.outputs.name }}:nano-${{ github.sha }}
+          cache-from: type=gha,scope=nano
+          cache-to: type=gha,scope=nano,mode=max
+          provenance: false
