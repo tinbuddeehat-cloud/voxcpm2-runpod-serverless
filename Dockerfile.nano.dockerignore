@@ -1,0 +1,7 @@
+**
+!Dockerfile.nano
+!requirements.nano.txt
+!scripts/
+!scripts/install_flash_wheel.py
+!nano/
+!nano/*.py

@@ -1,0 +1,41 @@
+# Experimental image. The production Dockerfile and :latest are not changed.
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
+
+ARG NANO_COMMIT=c702631ea33db63932f0c2288cc09a543e68a3ef
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    TOKENIZERS_PARALLELISM=false \
+    OMP_NUM_THREADS=4 \
+    OPENBLAS_NUM_THREADS=4 \
+    VOXCPM_INFERENCE_TIMESTEPS=10 \
+    VOXCPM_SEGMENT_CHARS=250 \
+    VOXCPM_MAX_TEXT_CHARS=2000 \
+    VOXCPM_CACHED_HUB=/runpod-volume/huggingface-cache/hub \
+    VOXCPM_REFERENCE_CACHE_MB=16 \
+    NANO_GPU_MEMORY_UTILIZATION=0.65 \
+    NANO_ENFORCE_EAGER=false \
+    NANO_COMMIT=${NANO_COMMIT}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg libsndfile1 ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY requirements.nano.txt /app/
+RUN python -m pip install -r requirements.nano.txt
+COPY scripts/install_flash_wheel.py /app/scripts/
+RUN python scripts/install_flash_wheel.py
+RUN git init /tmp/nano-source \
+    && git -C /tmp/nano-source remote add origin https://github.com/a710128/nanovllm-voxcpm.git \
+    && git -C /tmp/nano-source fetch --depth=1 origin "${NANO_COMMIT}" \
+    && git -C /tmp/nano-source checkout --detach FETCH_HEAD \
+    && python -m pip install --no-deps /tmp/nano-source \
+    && rm -rf /tmp/nano-source
+RUN python -m pip check \
+    && python -c "import torch, flash_attn, nanovllm_voxcpm; print('Imports OK', torch.__version__)"
+COPY nano /app/nano
+RUN python -m compileall -q /app/nano
+CMD ["python", "-u", "-m", "nano.handler"]
